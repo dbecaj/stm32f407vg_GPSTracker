@@ -21,6 +21,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "lwip.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -48,9 +49,12 @@ osThreadId_t defaultTaskHandle;
 /* USER CODE BEGIN PV */
 
 // Accelerometer
-AccData accData;
+/*AccData accData;
 uint8_t accDataRdyFlag=0;
-osThreadId_t accTaskHandle;
+osThreadId_t accTaskHandle;*/
+
+// Ethernet
+struct netif gnetif;
 
 /* USER CODE END PV */
 
@@ -104,13 +108,13 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   // Accelerometer initialization
-  LIS3DSH_InitTypeDef myAccConfigDef;
+  /*LIS3DSH_InitTypeDef myAccConfigDef;
   myAccConfigDef.dataRate = LIS3DSH_DATARATE_25;
   myAccConfigDef.fullScale = LIS3DSH_FULLSCALE_4;
   myAccConfigDef.antiAliasingBW = LIS3DSH_FILTER_BW_50;
   myAccConfigDef.enableAxes = LIS3DSH_XYZ_ENABLE;
   myAccConfigDef.interruptEnable = true;
-  LIS3DSH_Init(&hspi1, &myAccConfigDef);
+  LIS3DSH_Init(&hspi1, &myAccConfigDef);*/
 
   /* USER CODE END 2 */
 
@@ -137,19 +141,19 @@ int main(void)
   const osThreadAttr_t defaultTask_attributes = {
     .name = "defaultTask",
     .priority = (osPriority_t) osPriorityNormal,
-    .stack_size = 128
+    .stack_size = 1024
   };
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
 
-  const osThreadAttr_t accTask_attributes = {
+  /*const osThreadAttr_t accTask_attributes = {
       .name = "accTask",
       .priority = (osPriority_t) osPriorityNormal,
       .stack_size = 128
     };
-  accTaskHandle = osThreadNew(StartAccTask, NULL, &accTask_attributes);
+  accTaskHandle = osThreadNew(StartAccTask, NULL, &accTask_attributes);*/
 
   /* USER CODE END RTOS_THREADS */
 
@@ -184,10 +188,14 @@ void SystemClock_Config(void)
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
   /** Initializes the CPU, AHB and APB busses clocks 
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 336;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -196,12 +204,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
   {
     Error_Handler();
   }
@@ -256,21 +264,24 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(MEMS_CS_GPIO_Port, MEMS_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : MEMS_CS_Pin */
-  GPIO_InitStruct.Pin = MEMS_CS_Pin;
+  /*Configure GPIO pin : PE3 */
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(MEMS_CS_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PD12 PD13 PD14 PD15 */
   GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
@@ -292,9 +303,10 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+/*void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
 	accDataRdyFlag = 1;
+	HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_13);
 	//HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0);
 }
 
@@ -307,9 +319,9 @@ void StartAccTask(void *argument) {
 								(accData.xyz.z >= 0 ? accData.xyz.z : accData.xyz.z * -1.0f);
 	  }
 
-	  osDelay(5);
+	  osDelay(10);
   }
-}
+}*/
 
 /* USER CODE END 4 */
 
@@ -322,10 +334,17 @@ void StartAccTask(void *argument) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
+  /* init code for LWIP */
+  MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
+
+  // Start dhcp
+  dhcp_start(&gnetif);
   /* Infinite loop */
   for(;;)
   {
+	  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_15);
+	  //sys_check_timeouts();
 	  osDelay(10);
   }
   /* USER CODE END 5 */ 
