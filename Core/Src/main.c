@@ -53,8 +53,8 @@ osThreadId_t defaultTaskHandle;
 uint8_t accDataRdyFlag=0;
 osThreadId_t accTaskHandle;*/
 
-// Ethernet
-struct netif gnetif;
+extern struct netif gnetif;
+extern ETH_HandleTypeDef heth;
 
 /* USER CODE END PV */
 
@@ -338,14 +338,20 @@ void StartDefaultTask(void *argument)
   MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
 
-  // Start dhcp
-  dhcp_start(&gnetif);
+  /* Initialize the LwIP stack */
+  //Netif_Config();
+
   /* Infinite loop */
   for(;;)
   {
+	  /*if (netif_is_link_up(&gnetif)) {
+		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_15);
+	  }
+	  else {
+		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_14);
+	  }*/
 	  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_15);
-	  //sys_check_timeouts();
-	  osDelay(10);
+	  osDelay(250);
   }
   /* USER CODE END 5 */ 
 }
