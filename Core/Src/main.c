@@ -22,6 +22,7 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "lwip.h"
+#include "lwip/api.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -54,7 +55,11 @@ uint8_t accDataRdyFlag=0;
 osThreadId_t accTaskHandle;*/
 
 extern struct netif gnetif;
-extern ETH_HandleTypeDef heth;
+struct netconn* conn;
+ip_addr_t serverAddr;
+u16_t serverPort = 3000;
+err_t serverConnStatus = -1;
+
 
 /* USER CODE END PV */
 
@@ -82,6 +87,8 @@ void StartAccTask(void* argument);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
+
+  IP_ADDR4(&serverAddr, 192, 168, 1, 3);
 
   /* USER CODE END 1 */
   
@@ -338,20 +345,27 @@ void StartDefaultTask(void *argument)
   MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
 
-  /* Initialize the LwIP stack */
-  //Netif_Config();
+  // Initialize new connection
+  conn = netconn_new(NETCONN_TCP);
 
   /* Infinite loop */
   for(;;)
   {
-	  /*if (netif_is_link_up(&gnetif)) {
-		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_15);
+	  /* Async init code */
+
+	  // TCP Server connection
+	  if (gnetif.ip_addr.addr != 0 && serverConnStatus == -1) {
+		  //rc1 = netconn_bind(conn, &gnetif.ip_addr, 0);
+		  serverConnStatus = netconn_connect(conn, &serverAddr, serverPort);
 	  }
-	  else {
-		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_14);
-	  }*/
-	  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_15);
-	  osDelay(250);
+
+
+	  /* LED indicators */
+
+	  // Server connection status
+	  if (serverConnStatus == ERR_OK) HAL_GPIO_WritePin(GPIOD, LED_GREEN, 1);
+
+	  osDelay(10);
   }
   /* USER CODE END 5 */ 
 }
