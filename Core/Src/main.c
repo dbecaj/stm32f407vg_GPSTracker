@@ -59,7 +59,14 @@ struct netconn* conn;
 ip_addr_t serverAddr;
 u16_t serverPort = 3000;
 err_t serverConnStatus = -1;
-
+char requestData[] = "POST /location HTTP/1.0\r\n\
+Host: 192.168.1.3:3000\r\n\
+Content-Type: application/json\r\n\
+Content-Length: 25\r\n\
+\r\n\
+{\"lat\":12.12,\"lon\":13.13}\r\n\
+\r\n";
+size_t requestDataSize = sizeof(requestData);
 
 /* USER CODE END PV */
 
@@ -345,25 +352,27 @@ void StartDefaultTask(void *argument)
   MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
 
-  // Initialize new connection
-  conn = netconn_new(NETCONN_TCP);
-
   /* Infinite loop */
   for(;;)
   {
 	  /* Async init code */
 
-	  // TCP Server connection
-	  if (gnetif.ip_addr.addr != 0 && serverConnStatus == -1) {
-		  //rc1 = netconn_bind(conn, &gnetif.ip_addr, 0);
-		  serverConnStatus = netconn_connect(conn, &serverAddr, serverPort);
-	  }
-
 
 	  /* LED indicators */
 
 	  // Server connection status
-	  if (serverConnStatus == ERR_OK) HAL_GPIO_WritePin(GPIOD, LED_GREEN, 1);
+	  if (gnetif.ip_addr.addr != 0) {
+		  HAL_GPIO_TogglePin(GPIOD, LED_GREEN);
+		  osDelay(500);
+
+		  conn = netconn_new(NETCONN_TCP);
+		  serverConnStatus = netconn_connect(conn, &serverAddr, serverPort);
+		  if (serverConnStatus == ERR_OK) {
+			  netconn_write(conn, requestData, requestDataSize, NETCONN_NOFLAG);
+		  }
+
+		  netconn_delete(conn);
+	  }
 
 	  osDelay(10);
   }
