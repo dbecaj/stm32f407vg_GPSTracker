@@ -45,6 +45,18 @@ typedef struct {
 	double absCombined;
 } AccData;
 
+typedef struct {
+	uint8_t addr0;
+	uint8_t addr1;
+	uint8_t addr2;
+	uint8_t addr3;
+} IpAddr;
+
+typedef struct {
+	double lat;
+	double lon;
+} GpsLocation;
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

@@ -22,10 +22,16 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "lwip.h"
-#include "lwip/api.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+
+#include "lwip/api.h"
+#include "task.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
 
 /* USER CODE END Includes */
 
@@ -47,26 +53,35 @@
 SPI_HandleTypeDef hspi1;
 
 osThreadId_t defaultTaskHandle;
+osThreadId_t networkTaskHandle;
+osThreadId_t accTaskHandle;
 /* USER CODE BEGIN PV */
 
-// Accelerometer
-/*AccData accData;
-uint8_t accDataRdyFlag=0;
-osThreadId_t accTaskHandle;*/
+// Generic
+signed char* overflowTaskName;
 
+// Accelerometer
+AccData accData;
+uint8_t accDataRdyFlag=0;
+
+// Network
 extern struct netif gnetif;
 struct netconn* conn;
+IpAddr serverIp = { 192, 168, 1, 3 };
 ip_addr_t serverAddr;
 u16_t serverPort = 3000;
 err_t serverConnStatus = -1;
-char requestData[] = "POST /location HTTP/1.0\r\n\
+/*char requestData[] = "POST /location HTTP/1.0\r\n\
 Host: 192.168.1.3:3000\r\n\
 Content-Type: application/json\r\n\
 Content-Length: 25\r\n\
 \r\n\
 {\"lat\":12.12,\"lon\":13.13}\r\n\
 \r\n";
-size_t requestDataSize = sizeof(requestData);
+size_t requestDataSize = sizeof(requestData);*/
+int startSendingLocation = 0;
+char jsonString[50];
+char requestString[150];
 
 /* USER CODE END PV */
 
@@ -75,10 +90,13 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 void StartDefaultTask(void *argument);
+void StartNetworkTask(void *argument);
+void StartAccTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
-void StartAccTask(void* argument);
+void createHttpLocationRequest(char* outputString, IpAddr ip, u16_t port, GpsLocation location);
+void parseDouble(char* output, double value, uint8_t precision);
 
 /* USER CODE END PFP */
 
@@ -95,7 +113,7 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
 
-  IP_ADDR4(&serverAddr, 192, 168, 1, 3);
+  IP_ADDR4(&serverAddr, serverIp.addr0, serverIp.addr1, serverIp.addr2, serverIp.addr3);
 
   /* USER CODE END 1 */
   
@@ -155,9 +173,25 @@ int main(void)
   const osThreadAttr_t defaultTask_attributes = {
     .name = "defaultTask",
     .priority = (osPriority_t) osPriorityNormal,
-    .stack_size = 1024
+    .stack_size = 512
   };
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* definition and creation of networkTask */
+  const osThreadAttr_t networkTask_attributes = {
+    .name = "networkTask",
+    .priority = (osPriority_t) osPriorityLow,
+    .stack_size = 1024
+  };
+  networkTaskHandle = osThreadNew(StartNetworkTask, NULL, &networkTask_attributes);
+
+  /* definition and creation of accTask */
+  const osThreadAttr_t accTask_attributes = {
+    .name = "accTask",
+    .priority = (osPriority_t) osPriorityLow,
+    .stack_size = 256
+  };
+  accTaskHandle = osThreadNew(StartAccTask, NULL, &accTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -320,22 +354,42 @@ static void MX_GPIO_Init(void)
 /*void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
 	accDataRdyFlag = 1;
-	HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_13);
+	HAL_GPIO_TogglePin(GPIOD, LED_ORANGE);
 	//HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0);
+}*/
+
+void parseDouble(char* output, double value, uint8_t precision) {
+	int integerPart = (int)value;
+	float floatingPointPart = (value - integerPart) * pow(10, precision);
+	sprintf(output, "%d.%d", (int)integerPart, (int)floatingPointPart);
 }
 
-void StartAccTask(void *argument) {
-  for(;;) {
-	  if (accDataRdyFlag == 1) {
-		accData.xyz = LIS3DSH_GetDataScaled();
-		accData.absCombined = (accData.xyz.x >= 0 ? accData.xyz.x : accData.xyz.x * -1.0f) +
-								(accData.xyz.y >= 0 ? accData.xyz.y : accData.xyz.y * -1.0f) +
-								(accData.xyz.z >= 0 ? accData.xyz.z : accData.xyz.z * -1.0f);
-	  }
+void createHttpLocationRequest(char* outputString, IpAddr ip, u16_t port, GpsLocation location) {
+	char ipString[15];
+	sprintf(ipString, "%d.%d.%d.%d", ip.addr0, ip.addr1, ip.addr2, ip.addr3);
 
-	  osDelay(10);
-  }
-}*/
+	char jsonFormat[] = "{\"lat\":%s,\"lon\":%s}";
+	char latString[10];
+	parseDouble(latString, location.lat, 4);
+	char lonString[10];
+	parseDouble(lonString, location.lon, 4);
+	sprintf(jsonString, jsonFormat, latString, lonString);
+
+	char requestFormat[] = "POST /location HTTP/1.0\r\n\
+Host: %s:%d\r\n\
+Content-Type: application/json\r\n\
+Content-Length: %d\r\n\
+\r\n\
+%s\r\n\
+\r\n";
+
+	sprintf(outputString, requestFormat, ipString, port, strlen(jsonString), jsonString);
+}
+
+void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName) {
+	overflowTaskName = pcTaskName;
+	HAL_GPIO_WritePin(GPIOD, LED_RED, 1);
+}
 
 /* USER CODE END 4 */
 
@@ -360,23 +414,65 @@ void StartDefaultTask(void *argument)
 
 	  /* LED indicators */
 
-	  // Server connection status
+	  // Check if DHCP got an addr from router
 	  if (gnetif.ip_addr.addr != 0) {
-		  HAL_GPIO_TogglePin(GPIOD, LED_GREEN);
-		  osDelay(500);
-
-		  conn = netconn_new(NETCONN_TCP);
-		  serverConnStatus = netconn_connect(conn, &serverAddr, serverPort);
-		  if (serverConnStatus == ERR_OK) {
-			  netconn_write(conn, requestData, requestDataSize, NETCONN_NOFLAG);
-		  }
-
-		  netconn_delete(conn);
+		  startSendingLocation = 1;
+		  HAL_GPIO_WritePin(GPIOD, LED_GREEN, 1);
 	  }
 
-	  osDelay(10);
+	  osDelay(50);
   }
   /* USER CODE END 5 */ 
+}
+
+/* USER CODE BEGIN Header_StartNetworkTask */
+/**
+* @brief Function implementing the networkTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartNetworkTask */
+void StartNetworkTask(void *argument)
+{
+  /* USER CODE BEGIN StartNetworkTask */
+  /* Infinite loop */
+  for(;;)
+  {
+	  if (startSendingLocation) {
+		conn = netconn_new(NETCONN_TCP);
+		serverConnStatus = netconn_connect(conn, &serverAddr, serverPort);
+		if (serverConnStatus == ERR_OK) {
+		  GpsLocation location = { 12.12, 13.13 };
+		  createHttpLocationRequest(requestString, serverIp, serverPort, location);
+		  netconn_write(conn, requestString, strlen(requestString), NETCONN_NOFLAG);
+		}
+
+		netconn_delete(conn);
+
+		HAL_GPIO_TogglePin(GPIOD, LED_BLUE);
+	  }
+
+	  osDelay(1000);
+  }
+  /* USER CODE END StartNetworkTask */
+}
+
+/* USER CODE BEGIN Header_StartAccTask */
+/**
+* @brief Function implementing the accTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartAccTask */
+void StartAccTask(void *argument)
+{
+  /* USER CODE BEGIN StartAccTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(50);
+  }
+  /* USER CODE END StartAccTask */
 }
 
 /**
