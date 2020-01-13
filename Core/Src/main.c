@@ -50,28 +50,25 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-SPI_HandleTypeDef hspi1;
+I2C_HandleTypeDef hi2c1;
 
 osThreadId_t defaultTaskHandle;
 osThreadId_t networkTaskHandle;
-osThreadId_t accTaskHandle;
+osThreadId_t tempTaskHandle;
 /* USER CODE BEGIN PV */
 
 // Generic
 signed char* overflowTaskName;
-
-// Accelerometer
-AccData accData;
-uint8_t accDataRdyFlag=0;
+uint8_t sendDataFlag = 0;
 
 // Network
 extern struct netif gnetif;
 struct netconn* conn;
-IpAddr serverIp = { 192, 168, 1, 3 };
+IpAddr serverIp = { 192, 168, 1, 9 };
 ip_addr_t serverAddr;
 u16_t serverPort = 3000;
 err_t serverConnStatus = -1;
-/*char requestData[] = "POST /location HTTP/1.0\r\n\
+/*char requestData[] = "POST /temp HTTP/1.0\r\n\
 Host: 192.168.1.3:3000\r\n\
 Content-Type: application/json\r\n\
 Content-Length: 25\r\n\
@@ -83,19 +80,24 @@ int startSendingLocation = 0;
 char jsonString[50];
 char requestString[150];
 
+// Temperature
+uint8_t data_write[3];
+uint8_t data_read[2];
+double tempval;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_SPI1_Init(void);
+static void MX_I2C1_Init(void);
 void StartDefaultTask(void *argument);
 void StartNetworkTask(void *argument);
-void StartAccTask(void *argument);
+void StartTempTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
-void createHttpLocationRequest(char* outputString, IpAddr ip, u16_t port, GpsLocation location);
+void createHttpTempRequest(char* outputString, IpAddr ip, u16_t port, double temp);
 void parseDouble(char* output, double value, uint8_t precision);
 
 /* USER CODE END PFP */
@@ -136,7 +138,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_SPI1_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
   // Accelerometer initialization
@@ -185,13 +187,13 @@ int main(void)
   };
   networkTaskHandle = osThreadNew(StartNetworkTask, NULL, &networkTask_attributes);
 
-  /* definition and creation of accTask */
-  const osThreadAttr_t accTask_attributes = {
-    .name = "accTask",
+  /* definition and creation of tempTask */
+  const osThreadAttr_t tempTask_attributes = {
+    .name = "tempTask",
     .priority = (osPriority_t) osPriorityLow,
     .stack_size = 256
   };
-  accTaskHandle = osThreadNew(StartAccTask, NULL, &accTask_attributes);
+  tempTaskHandle = osThreadNew(StartTempTask, NULL, &tempTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -264,40 +266,36 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief SPI1 Initialization Function
+  * @brief I2C1 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_SPI1_Init(void)
+static void MX_I2C1_Init(void)
 {
 
-  /* USER CODE BEGIN SPI1_Init 0 */
+  /* USER CODE BEGIN I2C1_Init 0 */
 
-  /* USER CODE END SPI1_Init 0 */
+  /* USER CODE END I2C1_Init 0 */
 
-  /* USER CODE BEGIN SPI1_Init 1 */
+  /* USER CODE BEGIN I2C1_Init 1 */
 
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN SPI1_Init 2 */
+  /* USER CODE BEGIN I2C1_Init 2 */
 
-  /* USER CODE END SPI1_Init 2 */
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
@@ -311,7 +309,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -319,17 +316,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PE3 */
-  GPIO_InitStruct.Pin = GPIO_PIN_3;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  /*Configure GPIO pin : PA0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PD12 PD13 PD14 PD15 */
   GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
@@ -337,12 +330,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PE0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
@@ -364,18 +351,16 @@ void parseDouble(char* output, double value, uint8_t precision) {
 	sprintf(output, "%d.%d", (int)integerPart, (int)floatingPointPart);
 }
 
-void createHttpLocationRequest(char* outputString, IpAddr ip, u16_t port, GpsLocation location) {
+void createHttpTempRequest(char* outputString, IpAddr ip, u16_t port, double temp) {
 	char ipString[15];
 	sprintf(ipString, "%d.%d.%d.%d", ip.addr0, ip.addr1, ip.addr2, ip.addr3);
 
-	char jsonFormat[] = "{\"lat\":%s,\"lon\":%s}";
-	char latString[10];
-	parseDouble(latString, location.lat, 4);
-	char lonString[10];
-	parseDouble(lonString, location.lon, 4);
-	sprintf(jsonString, jsonFormat, latString, lonString);
+	char jsonFormat[] = "{\"temp\":%s}";
+	char tempString[10];
+	parseDouble(tempString, temp, 4);
+	sprintf(jsonString, jsonFormat, tempString);
 
-	char requestFormat[] = "POST /location HTTP/1.0\r\n\
+	char requestFormat[] = "POST /temp HTTP/1.0\r\n\
 Host: %s:%d\r\n\
 Content-Type: application/json\r\n\
 Content-Length: %d\r\n\
@@ -442,14 +427,13 @@ void StartNetworkTask(void *argument)
 		conn = netconn_new(NETCONN_TCP);
 		serverConnStatus = netconn_connect(conn, &serverAddr, serverPort);
 		if (serverConnStatus == ERR_OK) {
-		  GpsLocation location = { 12.12, 13.13 };
-		  createHttpLocationRequest(requestString, serverIp, serverPort, location);
+		  createHttpTempRequest(requestString, serverIp, serverPort, tempval);
 		  netconn_write(conn, requestString, strlen(requestString), NETCONN_NOFLAG);
+
+		  HAL_GPIO_TogglePin(GPIOD, LED_BLUE);
 		}
 
 		netconn_delete(conn);
-
-		HAL_GPIO_TogglePin(GPIOD, LED_BLUE);
 	  }
 
 	  osDelay(1000);
@@ -457,22 +441,61 @@ void StartNetworkTask(void *argument)
   /* USER CODE END StartNetworkTask */
 }
 
-/* USER CODE BEGIN Header_StartAccTask */
+/* USER CODE BEGIN Header_StartTempTask */
 /**
-* @brief Function implementing the accTask thread.
+* @brief Function implementing the tempTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_StartAccTask */
-void StartAccTask(void *argument)
+/* USER CODE END Header_StartTempTask */
+void StartTempTask(void *argument)
 {
-  /* USER CODE BEGIN StartAccTask */
+  /* USER CODE BEGIN StartTempTask */
+
+	data_write[0] = MCP9808_REG_CONF;
+	data_write[1] = 0x00;  // config msb
+	data_write[2] = 0x00;  // config lsb
+	HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)MCP9808_ADDR, (uint8_t*)data_write, 3, 10);
+	osDelay(20);
+
   /* Infinite loop */
   for(;;)
   {
+	  // Read temperature register
+	  data_write[0] = MCP9808_REG_TEMP;
+	  HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)MCP9808_ADDR, (uint8_t*)data_write, 1, 10); // no stop
+
+	  HAL_I2C_Master_Receive(&hi2c1, (uint16_t)MCP9808_ADDR, (uint8_t*)data_read, 2, 10);
+
+	  data_read[0] = data_read[0] & 0x1F;  // clear flag bits
+
+	  if((data_read[0] & 0x10) == 0x10) {
+		  // Negative temp
+		  data_read[0] = data_read[0] & 0x0F;
+		  tempval = 256 - (data_read[0] << 4) + (data_read[1] >> 4);
+	  } else {
+		  // Positive temp
+		  tempval = (data_read[0] << 4) + (data_read[1] >> 4);
+	  }
+
+	  // fractional part (0.25°C precision)
+	  if (data_read[1] & 0x08) {
+		  if(data_read[1] & 0x04) {
+			  tempval += 0.75;
+		  } else {
+			  tempval += 0.5;
+		  }
+	  } else {
+		  if(data_read[1] & 0x04) {
+			  tempval += 0.25;
+		  }
+	  }
+
+	  HAL_GPIO_TogglePin(GPIOD, LED_ORANGE);
+
     osDelay(50);
   }
-  /* USER CODE END StartAccTask */
+  /* USER CODE END StartTempTask */
 }
 
 /**

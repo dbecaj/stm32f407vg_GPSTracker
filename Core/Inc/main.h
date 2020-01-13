@@ -33,17 +33,10 @@ extern "C" {
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-#include "MY_LIS3DSH.h"
-
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-
-typedef struct {
-	LIS3DSH_DataScaled xyz;
-	double absCombined;
-} AccData;
 
 typedef struct {
 	uint8_t addr0;
@@ -83,6 +76,10 @@ void Error_Handler(void);
 #define LED_RED GPIO_PIN_14
 #define LED_ORANGE GPIO_PIN_13
 #define LED_GREEN GPIO_PIN_12
+
+#define MCP9808_REG_TEMP (0x05) // Temperature Register
+#define MCP9808_REG_CONF (0x01) // Configuration Register
+#define MCP9808_ADDR     (0x30) // MCP9808 base address 0x18<<1
 
 /* USER CODE END Private defines */
 

@@ -45,6 +45,8 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
+extern uint8_t sendDataFlag;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -187,6 +189,12 @@ void SysTick_Handler(void)
 void EXTI0_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI0_IRQn 0 */
+
+	for (int i = 0; i < 65535; i++);
+
+	if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0)) {
+		sendDataFlag = 1;
+	}
 
   /* USER CODE END EXTI0_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0);
