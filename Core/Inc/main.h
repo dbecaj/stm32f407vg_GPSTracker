@@ -81,6 +81,9 @@ void Error_Handler(void);
 #define MCP9808_REG_CONF (0x01) // Configuration Register
 #define MCP9808_ADDR     (0x30) // MCP9808 base address 0x18<<1
 
+#define TEMP_BUFFER_SIZE 20
+#define TEMP_DIFF 0.25 // Temperature difference needed to send a new temp to the server
+
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

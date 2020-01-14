@@ -57,33 +57,26 @@ osThreadId_t networkTaskHandle;
 osThreadId_t tempTaskHandle;
 /* USER CODE BEGIN PV */
 
-// Generic
+/* Generic */
 signed char* overflowTaskName;
-uint8_t sendDataFlag = 0;
 
-// Network
+/* Network */
 extern struct netif gnetif;
-struct netconn* conn;
 IpAddr serverIp = { 192, 168, 1, 9 };
 ip_addr_t serverAddr;
 u16_t serverPort = 3000;
-err_t serverConnStatus = -1;
-/*char requestData[] = "POST /temp HTTP/1.0\r\n\
-Host: 192.168.1.3:3000\r\n\
-Content-Type: application/json\r\n\
-Content-Length: 25\r\n\
-\r\n\
-{\"lat\":12.12,\"lon\":13.13}\r\n\
-\r\n";
-size_t requestDataSize = sizeof(requestData);*/
-int startSendingLocation = 0;
 char jsonString[50];
 char requestString[150];
+osSemaphoreId_t networkSemaphore;
+err_t serverConnStatus = -1;
 
-// Temperature
+/* Temperature */
 uint8_t data_write[3];
 uint8_t data_read[2];
-double tempval;
+double avgTemp = -1; // average temp computed from our temp buffer
+double baselineTemp = -1; // last sent temp. We use it to only send temp when the difference is big enough
+double tempBuffer[TEMP_BUFFER_SIZE]; // temperature value buffer
+osMessageQueueId_t tempQueue;
 
 /* USER CODE END PV */
 
@@ -115,7 +108,11 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
 
-  IP_ADDR4(&serverAddr, serverIp.addr0, serverIp.addr1, serverIp.addr2, serverIp.addr3);
+	// Convert our ip data structure into a format that lwip uses
+	IP_ADDR4(&serverAddr, serverIp.addr0, serverIp.addr1, serverIp.addr2, serverIp.addr3);
+
+	tempQueue = osMessageQueueNew(1, sizeof(double), NULL);
+	networkSemaphore = osSemaphoreNew(1, 0, NULL);
 
   /* USER CODE END 1 */
   
@@ -140,15 +137,6 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-
-  // Accelerometer initialization
-  /*LIS3DSH_InitTypeDef myAccConfigDef;
-  myAccConfigDef.dataRate = LIS3DSH_DATARATE_25;
-  myAccConfigDef.fullScale = LIS3DSH_FULLSCALE_4;
-  myAccConfigDef.antiAliasingBW = LIS3DSH_FILTER_BW_50;
-  myAccConfigDef.enableAxes = LIS3DSH_XYZ_ENABLE;
-  myAccConfigDef.interruptEnable = true;
-  LIS3DSH_Init(&hspi1, &myAccConfigDef);*/
 
   /* USER CODE END 2 */
 
@@ -318,22 +306,12 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PA0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
   /*Configure GPIO pins : PD12 PD13 PD14 PD15 */
   GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
 }
 
@@ -401,7 +379,8 @@ void StartDefaultTask(void *argument)
 
 	  // Check if DHCP got an addr from router
 	  if (gnetif.ip_addr.addr != 0) {
-		  startSendingLocation = 1;
+		  // Signal network task that the network is ready for sending data
+		  osSemaphoreRelease(networkSemaphore);
 		  HAL_GPIO_WritePin(GPIOD, LED_GREEN, 1);
 	  }
 
@@ -420,23 +399,34 @@ void StartDefaultTask(void *argument)
 void StartNetworkTask(void *argument)
 {
   /* USER CODE BEGIN StartNetworkTask */
+
+	// Wait for network connection to be established
+	osSemaphoreAcquire(networkSemaphore, portMAX_DELAY);
+
   /* Infinite loop */
   for(;;)
   {
-	  if (startSendingLocation) {
-		conn = netconn_new(NETCONN_TCP);
-		serverConnStatus = netconn_connect(conn, &serverAddr, serverPort);
-		if (serverConnStatus == ERR_OK) {
-		  createHttpTempRequest(requestString, serverIp, serverPort, tempval);
+	  // Wait for the new avg temp message
+	  osMessageQueueGet(tempQueue, &avgTemp, NULL, portMAX_DELAY);
+
+	  // Establish connection to server
+	  struct netconn* conn = netconn_new(NETCONN_TCP);
+	  serverConnStatus = netconn_connect(conn, &serverAddr, serverPort);
+	  if (serverConnStatus == ERR_OK) {
+		  // Send json temp value to server
+		  createHttpTempRequest(requestString, serverIp, serverPort, avgTemp);
 		  netconn_write(conn, requestString, strlen(requestString), NETCONN_NOFLAG);
 
+		  // Indicate that data was sent
 		  HAL_GPIO_TogglePin(GPIOD, LED_BLUE);
-		}
-
-		netconn_delete(conn);
+	  }
+	  else {
+		  HAL_GPIO_WritePin(GPIOD, LED_BLUE, 0);
 	  }
 
-	  osDelay(1000);
+	  netconn_delete(conn);
+
+	  osDelay(100);
   }
   /* USER CODE END StartNetworkTask */
 }
@@ -458,42 +448,69 @@ void StartTempTask(void *argument)
 	HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)MCP9808_ADDR, (uint8_t*)data_write, 3, 10);
 	osDelay(20);
 
+	int buffer_index = 0;
+
   /* Infinite loop */
   for(;;)
   {
 	  // Read temperature register
 	  data_write[0] = MCP9808_REG_TEMP;
 	  HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)MCP9808_ADDR, (uint8_t*)data_write, 1, 10); // no stop
-
 	  HAL_I2C_Master_Receive(&hi2c1, (uint16_t)MCP9808_ADDR, (uint8_t*)data_read, 2, 10);
 
 	  data_read[0] = data_read[0] & 0x1F;  // clear flag bits
 
+	  /* Calculate temp with 0.25 precision */
+	  double temp = -1;
 	  if((data_read[0] & 0x10) == 0x10) {
 		  // Negative temp
 		  data_read[0] = data_read[0] & 0x0F;
-		  tempval = 256 - (data_read[0] << 4) + (data_read[1] >> 4);
+		  temp = 256 - (data_read[0] << 4) + (data_read[1] >> 4);
 	  } else {
 		  // Positive temp
-		  tempval = (data_read[0] << 4) + (data_read[1] >> 4);
+		  temp = (data_read[0] << 4) + (data_read[1] >> 4);
 	  }
 
 	  // fractional part (0.25°C precision)
 	  if (data_read[1] & 0x08) {
 		  if(data_read[1] & 0x04) {
-			  tempval += 0.75;
+			  temp += 0.75;
 		  } else {
-			  tempval += 0.5;
+			  temp += 0.5;
 		  }
 	  } else {
 		  if(data_read[1] & 0x04) {
-			  tempval += 0.25;
+			  temp += 0.25;
 		  }
 	  }
 
-	  HAL_GPIO_TogglePin(GPIOD, LED_ORANGE);
+	  tempBuffer[buffer_index++] = temp;
 
-    osDelay(50);
+	  if (buffer_index == TEMP_BUFFER_SIZE) {
+		  // Calculate avg. temp
+		  avgTemp = 0;
+		  for (int i = 0; i < TEMP_BUFFER_SIZE; i++) {
+			  avgTemp += tempBuffer[i];
+		  }
+		  avgTemp = avgTemp/TEMP_BUFFER_SIZE;
+
+		  // Send avg. temp to network task via message queue
+		  if (avgTemp > (baselineTemp + TEMP_DIFF) || avgTemp < (baselineTemp - TEMP_DIFF)) {
+			  osMessageQueuePut(tempQueue, &avgTemp, 0, 0);
+			  baselineTemp = avgTemp; // Set baseline temp to new baseline
+		  }
+		  else {
+			  // Reset the server send led status because the task is blocked while waiting for new message
+			  // This is redundant piece of code
+			  HAL_GPIO_WritePin(GPIOD, LED_BLUE, 0);
+		  }
+
+		  buffer_index = 0;
+	  }
+
+	  //HAL_GPIO_TogglePin(GPIOD, LED_ORANGE);
+
+	  osDelay(50);
   }
   /* USER CODE END StartTempTask */
 }
